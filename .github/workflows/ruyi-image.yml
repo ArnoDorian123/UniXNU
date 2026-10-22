@@ -8,8 +8,11 @@
 #   1. with_firmware = false  -> kernel + EDK II package + device tree merge
 #   2. with_firmware = true   -> also builds SILICIUM_UEFI.fd and packs boot.img (needs uefi-ruyi)
 #
-# Revision 2: lld-link is resolved explicitly (Homebrew may split lld into its own formula) and
-# a verification step prints every host tool, so a missing one is visible without guessing.
+# Revision 3:
+#   - the uefi checkout initialises submodules explicitly (Binaries is required by APRIORI.inc)
+#   - a report step prints the uefi tree, the Binaries submodule and the platform files before
+#     the firmware build, so a missing piece is visible without reading 200 lines of EDK II output
+#   - a failure step greps the firmware log for the actual EDK II error
 
 name: ruyi image
 
@@ -35,7 +38,7 @@ on:
       uefi_ref:
         description: Mu-Silicium port ref (branch inside that repository)
         required: false
-        default: main
+        default: sheng
       with_firmware:
         description: Build the UEFI firmware volume and boot.img
         type: boolean
@@ -59,21 +62,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
+      - name: Checkout device repository
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.device_repository }}
           ref: ${{ inputs.device_ref }}
           path: device
           token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
 
-      - uses: actions/checkout@v4
+      - name: Checkout Mu-Silicium port
         if: inputs.with_firmware
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.uefi_repository }}
           ref: ${{ inputs.uefi_ref }}
           path: uefi
+          fetch-depth: 1
           submodules: recursive
           token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
+
+      - name: Report the Mu-Silicium tree
+        if: inputs.with_firmware
+        run: |
+          echo "== head =="
+          git -C uefi log --oneline -1
+          echo "== Binaries submodule (required by APRIORI.inc) =="
+          if [ -d uefi/Binaries/sheng ]; then
+            echo "uefi/Binaries/sheng present"
+            ls uefi/Binaries/sheng | head -20
+          else
+            echo "MISSING uefi/Binaries/sheng"
+            ls -la uefi/Binaries 2>/dev/null || echo "no uefi/Binaries directory at all"
+          fi
+          echo "== platform package =="
+          ls uefi/Platforms/Xiaomi/shengPkg | head -30
+          echo "== device config =="
+          ls -l uefi/Resources/Configs/ruyi.toml
 
       - uses: actions/setup-python@v5
         with:
@@ -126,8 +150,6 @@ jobs:
           done
           echo "--- lld-link --version"
           lld-link --version || echo "lld-link --version failed"
-          echo "--- llvm keg lld/ar entries"
-          ls "$(brew --prefix llvm)/bin" | grep -E 'lld|ar$' || true
 
       - name: Select the device
         run: |
@@ -154,6 +176,19 @@ jobs:
       - name: Build firmware
         if: inputs.with_firmware
         run: ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi"
+
+      - name: Show firmware errors
+        if: failure() && inputs.with_firmware
+        run: |
+          LOG=out/ruyi/logs/firmware.log
+          if [ -f "$LOG" ]; then
+            echo "=== EDK2 errors ==="
+            grep -nE ": error |error [0-9A-F]{4}|Failed to |not found" "$LOG" | tail -40 || true
+            echo "=== tail ==="
+            tail -30 "$LOG"
+          else
+            echo "no $LOG"
+          fi
 
       - name: Pack the boot image
         if: inputs.with_firmware
