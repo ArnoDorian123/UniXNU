@@ -5,8 +5,11 @@
 # Android boot image need the EDK II tree and the Mu-Silicium port, which this workflow adds.
 #
 # Run it in two phases:
-#   1. with_firmware = false  -> proves kernel + EDK II package build and merges the device tree
+#   1. with_firmware = false  -> kernel + EDK II package + device tree merge
 #   2. with_firmware = true   -> also builds SILICIUM_UEFI.fd and packs boot.img (needs uefi-ruyi)
+#
+# Revision 2: lld-link is resolved explicitly (Homebrew may split lld into its own formula) and
+# a verification step prints every host tool, so a missing one is visible without guessing.
 
 name: ruyi image
 
@@ -30,7 +33,7 @@ on:
         required: false
         default: ""
       uefi_ref:
-        description: Mu-Silicium port ref
+        description: Mu-Silicium port ref (branch inside that repository)
         required: false
         default: main
       with_firmware:
@@ -84,9 +87,47 @@ jobs:
 
       - name: Install host tools
         run: |
-          brew install cmake ninja unifdef llvm mtools dtc nasm
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          brew install cmake ninja unifdef llvm lld mtools dtc nasm || true
+
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LLVM_BIN="$LLVM_PREFIX/bin"
+          LLD_PREFIX="$(brew --prefix lld 2>/dev/null || echo "$LLVM_PREFIX")"
+          LLD_BIN="$LLD_PREFIX/bin"
+
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          echo "$LLD_BIN" >> "$GITHUB_PATH"
           echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+
+          # EDK II CLANGPDB links with lld-link. Homebrew has shipped it both inside the llvm
+          # keg and in a separate lld formula, so look in both and pin it into /usr/local/bin,
+          # which is always on PATH.
+          for candidate in "$LLD_BIN/lld-link" "$LLVM_BIN/lld-link" \
+                           "$LLD_BIN/ld.lld" "$LLVM_BIN/ld.lld" \
+                           "$LLD_BIN/lld"    "$LLVM_BIN/lld"; do
+            if [ -x "$candidate" ]; then
+              echo "lld-link resolved from: $candidate"
+              sudo ln -sf "$candidate" /usr/local/bin/lld-link
+              break
+            fi
+          done
+
+          if [ ! -x /usr/local/bin/lld-link ]; then
+            echo "no lld binary in the llvm/lld kegs; installing the standalone formula"
+            brew install lld
+            LLD_BIN="$(brew --prefix lld)/bin"
+            echo "$LLD_BIN" >> "$GITHUB_PATH"
+            sudo ln -sf "$LLD_BIN/lld-link" /usr/local/bin/lld-link
+          fi
+
+      - name: Verify host tools
+        run: |
+          for tool in clang clang++ lld-link llvm-ar cmake ninja unifdef mtools dtc nasm xcodebuild; do
+            printf '%-10s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+          echo "--- lld-link --version"
+          lld-link --version || echo "lld-link --version failed"
+          echo "--- llvm keg lld/ar entries"
+          ls "$(brew --prefix llvm)/bin" | grep -E 'lld|ar$' || true
 
       - name: Select the device
         run: |
@@ -115,15 +156,18 @@ jobs:
         run: ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi"
 
       - name: Pack the boot image
-        if: inputs.with_firmware && hashFiles('out/dtb/ruyi.dtb') != ''
+        if: inputs.with_firmware
         run: |
+          if [ ! -f out/dtb/ruyi.dtb ]; then
+            echo "out/dtb/ruyi.dtb missing; cannot pack boot.img" >&2
+            exit 1
+          fi
           ./unixnu bootimg --uefi "$GITHUB_WORKSPACE/uefi" --dtb out/dtb/ruyi.dtb
 
       - name: Report what was produced
         if: always()
         run: |
-          find out -maxdepth 3 -type f \( -name '*.macho' -o -name '*.img' -o -name '*.fd' -o -name '*.efi' -o -name '*.json' \) \
-            -printf '%10s  %p\n' 2>/dev/null || find out -maxdepth 3 -type f | head -50
+          ls -lhR out/*/kernel out/*/package out/*/boot out/dtb 2>/dev/null | head -80 || true
 
       - name: Upload kernel, package and firmware
         uses: actions/upload-artifact@v4
