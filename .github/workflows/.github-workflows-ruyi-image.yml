@@ -1,0 +1,141 @@
+# ruyi image pipeline: kernel -> package -> firmware -> boot.img
+#
+# Add this file to your fork of UniXNU as .github/workflows/ruyi-image.yml.
+# The stock macos.yml only covers kernel/userdata/payload; the UEFI firmware volume and the
+# Android boot image need the EDK II tree and the Mu-Silicium port, which this workflow adds.
+#
+# Run it in two phases:
+#   1. with_firmware = false  -> proves kernel + EDK II package build and merges the device tree
+#   2. with_firmware = true   -> also builds SILICIUM_UEFI.fd and packs boot.img (needs uefi-ruyi)
+
+name: ruyi image
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_repository:
+        description: Device repository as owner/name
+        required: true
+        default: UniXNU/UniXNU-sheng
+      device_ref:
+        description: Device repository ref
+        required: true
+        default: main
+      defconfig:
+        description: Defconfig name
+        required: true
+        default: ruyi_defconfig
+      uefi_repository:
+        description: Mu-Silicium port repository as owner/name
+        required: false
+        default: ""
+      uefi_ref:
+        description: Mu-Silicium port ref
+        required: false
+        default: main
+      with_firmware:
+        description: Build the UEFI firmware volume and boot.img
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ruyi-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  image:
+    runs-on: macos-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.device_repository }}
+          ref: ${{ inputs.device_ref }}
+          path: device
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
+
+      - uses: actions/checkout@v4
+        if: inputs.with_firmware
+        with:
+          repository: ${{ inputs.uefi_repository }}
+          ref: ${{ inputs.uefi_ref }}
+          path: uefi
+          submodules: recursive
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+
+      - name: Install host tools
+        run: |
+          brew install cmake ninja unifdef llvm mtools dtc nasm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+
+      - name: Select the device
+        run: |
+          ./unixnu defconfig "${{ inputs.defconfig }}" -D "$GITHUB_WORKSPACE/device"
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread \
+                          corecrypto-2023 IOStorageFamily edk2 -D "$GITHUB_WORKSPACE/device"
+
+      - name: Merge the device tree
+        run: |
+          mkdir -p out/dtb
+          if [ -f device/dtb/ruyi-soc.dtb ] && [ -f device/dtb/ruyi-board.dtbo ]; then
+            fdtoverlay -i device/dtb/ruyi-soc.dtb -o out/dtb/ruyi.dtb device/dtb/ruyi-board.dtbo
+            ls -l out/dtb/ruyi.dtb
+          else
+            echo "device/dtb/ruyi-soc.dtb or ruyi-board.dtbo missing; bootimg will be skipped"
+          fi
+
+      - name: Build kernel
+        run: ./unixnu build kernel
+
+      - name: Build EDK II package
+        run: ./unixnu build package
+
+      - name: Build firmware
+        if: inputs.with_firmware
+        run: ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi"
+
+      - name: Pack the boot image
+        if: inputs.with_firmware && hashFiles('out/dtb/ruyi.dtb') != ''
+        run: |
+          ./unixnu bootimg --uefi "$GITHUB_WORKSPACE/uefi" --dtb out/dtb/ruyi.dtb
+
+      - name: Report what was produced
+        if: always()
+        run: |
+          find out -maxdepth 3 -type f \( -name '*.macho' -o -name '*.img' -o -name '*.fd' -o -name '*.efi' -o -name '*.json' \) \
+            -printf '%10s  %p\n' 2>/dev/null || find out -maxdepth 3 -type f | head -50
+
+      - name: Upload kernel, package and firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruyi-image
+          path: |
+            out/*/kernel/**
+            out/*/package/**
+            out/*/payload/**
+            out/*/boot/**
+            out/*/userdata/**
+            out/*/logs/**
+            out/dtb/**
+          if-no-files-found: warn
+          retention-days: 7
