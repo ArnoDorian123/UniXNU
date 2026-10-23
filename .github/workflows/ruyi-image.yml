@@ -1,0 +1,163 @@
+# ruyi image pipeline: kernel -> package -> payload -> firmware -> boot.img
+#
+# Add this file to your fork of UniXNU as .github/workflows/ruyi-image.yml.
+# The stock macos.yml only covers kernel/userdata/payload; the UEFI firmware volume and the
+# Android boot image need the EDK II tree and the Mu-Silicium port, which this workflow adds.
+#
+# Run it in two phases:
+#   1. with_firmware = false  -> kernel + EDK II package + device tree merge
+#   2. with_firmware = true   -> also builds the payload, SILICIUM_UEFI.fd and boot.img
+#
+# Revision 5:
+#   - builds the payload volume so unixnu.toml exists and the menu has an XNU entry
+#   - report steps print the uefi tree, the built modules and the payload contents
+#   - a failure step greps the firmware log for the actual EDK II error
+
+name: ruyi image
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_repository:
+        description: Device repository as owner/name
+        required: true
+        default: UniXNU/UniXNU-sheng
+      device_ref:
+        description: Device repository ref
+        required: true
+        default: main
+      defconfig:
+        description: Defconfig name
+        required: true
+        default: ruyi_defconfig
+      uefi_repository:
+        description: Mu-Silicium port repository as owner/name
+        required: false
+        default: ""
+      uefi_ref:
+        description: Mu-Silicium port ref (branch inside that repository)
+        required: false
+        default: sheng
+      with_firmware:
+        description: Build the UEFI firmware volume and boot.img
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ruyi-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  image:
+    runs-on: macos-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.device_repository }}
+          ref: ${{ inputs.device_ref }}
+          path: device
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
+
+      - name: Checkout Mu-Silicium port
+        if: inputs.with_firmware
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.uefi_repository }}
+          ref: ${{ inputs.uefi_ref }}
+          path: uefi
+          fetch-depth: 1
+          submodules: recursive
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
+
+      - name: Report the Mu-Silicium tree
+        if: inputs.with_firmware
+        run: |
+          echo "== head =="
+          git -C uefi log --oneline -1
+          echo "== Binaries submodule (required by APRIORI.inc) =="
+          if [ -d uefi/Binaries/sheng ]; then
+            echo "uefi/Binaries/sheng present"
+            ls uefi/Binaries/sheng | head -20
+          else
+            echo "MISSING uefi/Binaries/sheng"
+            ls -la uefi/Binaries 2>/dev/null || echo "no uefi/Binaries directory at all"
+          fi
+          echo "== platform package =="
+          ls uefi/Platforms/Xiaomi/shengPkg | head -30
+          echo "== device config =="
+          ls -l uefi/Resources/Configs/ruyi.toml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+
+      - name: Install host tools
+        run: |
+          brew install cmake ninja unifdef llvm lld mtools dtc nasm || true
+
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LLVM_BIN="$LLVM_PREFIX/bin"
+          LLD_PREFIX="$(brew --prefix lld 2>/dev/null || echo "$LLVM_PREFIX")"
+          LLD_BIN="$LLD_PREFIX/bin"
+
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          echo "$LLD_BIN" >> "$GITHUB_PATH"
+          echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+
+          # EDK II CLANGPDB links with lld-link. Homebrew has shipped it both inside the llvm
+          # keg and in a separate lld formula, so look in both and pin it into /usr/local/bin,
+          # which is always on PATH.
+          for candidate in "$LLD_BIN/lld-link" "$LLVM_BIN/lld-link" \
+                           "$LLD_BIN/ld.lld" "$LLVM_BIN/ld.lld" \
+                           "$LLD_BIN/lld"    "$LLVM_BIN/lld"; do
+            if [ -x "$candidate" ]; then
+              echo "lld-link resolved from: $candidate"
+              sudo ln -sf "$candidate" /usr/local/bin/lld-link
+              break
+            fi
+          done
+
+          if [ ! -x /usr/local/bin/lld-link ]; then
+            echo "no lld binary in the llvm/lld kegs; installing the standalone formula"
+            brew install lld
+            LLD_BIN="$(brew --prefix lld)/bin"
+            echo "$LLD_BIN" >> "$GITHUB_PATH"
+            sudo ln -sf "$LLD_BIN/lld-link" /usr/local/bin/lld-link
+          fi
+
+      - name: Verify host tools
+        run: |
+          for tool in clang clang++ lld-link llvm-ar cmake ninja unifdef mtools dtc nasm xcodebuild; do
+            printf '%-10s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+          echo "--- lld-link --version"
+          lld-link --version || echo "lld-link --version failed"
+
+      - name: Select the device
+        run: |
+          ./unixnu defconfig "${{ inputs.defconfig }}" -D "$GITHUB_WORKSPACE/device"
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread \
+                          corecrypto-2023 IOStorageFamily edk2 -D "$GITHUB_WORKSPACE/device"
+
+      - name: Merge the device tree
+        run: |
+          mkdir -p out/dtb
+          if [ -f device/dtb/ruyi-soc.dtb ] && [ -f device/dtb/ruyi-board.dtbo ]; then
+            fdtoverlay -i device/dtb/ruyi-soc.dtb -o out/dtb/ruyi.dtb device/dtb/
