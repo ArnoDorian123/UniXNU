@@ -81,6 +81,12 @@ jobs:
           submodules: recursive
           token: ${{ secrets.UNIXNU_DEVICE_TOKEN || github.token }}
 
+      - name: Link the UEFI tree into the device repository
+        if: inputs.with_firmware
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/uefi" device/uefi-sheng
+          ls -l device/uefi-sheng/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/Font.h
+
       - name: Report the Mu-Silicium tree
         if: inputs.with_firmware
         run: |
@@ -173,7 +179,10 @@ jobs:
 
       - name: Build payload
         if: inputs.with_firmware
-        run: ./unixnu build payload
+        run: |
+          mkdir -p out/ruyi/tree
+          ln -sfn "$GITHUB_WORKSPACE/uefi" out/ruyi/tree/uefi-sheng
+          ./unixnu build payload
 
       - name: Report the payload
         if: inputs.with_firmware
