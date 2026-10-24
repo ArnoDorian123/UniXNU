@@ -184,17 +184,46 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/uefi" out/ruyi/tree/uefi-sheng
           ./unixnu build payload
 
-      - name: Report the payload
+      - name: Inspect and patch the payload image
         if: inputs.with_firmware
         run: |
-          echo "== payload tree =="
-          find out/ruyi/payload -maxdepth 5 2>/dev/null | sort | head -80 || true
-          echo "== toml files =="
-          find out/ruyi/payload -iname '*.toml' 2>/dev/null | sort || true
-          echo "== UniXNU directories =="
-          find out/ruyi/payload -type d -iname 'UniXNU' 2>/dev/null || true
-          echo "== payload images =="
-          ls -l out/ruyi/payload/*.img 2>/dev/null || echo "no payload image"
+          IMG=out/ruyi/payload/payload.img
+          ls -l "$IMG"
+
+          echo "== image contents =="
+          mdir -/ -i "$IMG" ::/ 2>&1 | head -80 || true
+
+          echo "== existing config =="
+          mcopy -n -i "$IMG" ::/EFI/UniXNU/unixnu.toml "$RUNNER_TEMP/old.toml" 2>/dev/null && cat "$RUNNER_TEMP/old.toml" || echo "no unixnu.toml inside"
+
+          cat > "$RUNNER_TEMP/unixnu.toml" <<'EOF'
+          version = 1
+
+          [boot]
+          timeout = 3
+          default = "xnu"
+
+          [ui]
+          title = "UniXNU"
+          scale = 6
+          console = "graphics"
+          layout = "portrait"
+
+          [[entry]]
+          id = "xnu"
+          title = "Boot XNU"
+          type = "xnu"
+          path = "Payloads/kernel.macho"
+          adt = "Payloads/kernel.macho.adt"
+          EOF
+
+          mmd -i "$IMG" ::/EFI 2>/dev/null || true
+          mmd -i "$IMG" ::/EFI/UniXNU 2>/dev/null || true
+          mcopy -o -i "$IMG" "$RUNNER_TEMP/unixnu.toml" ::/EFI/UniXNU/unixnu.toml
+
+          echo "== after patching =="
+          mdir -i "$IMG" ::/EFI/UniXNU 2>&1 || true
+          mcopy -n -i "$IMG" ::/EFI/UniXNU/unixnu.toml "$RUNNER_TEMP/new.toml" 2>/dev/null && cat "$RUNNER_TEMP/new.toml" || true
 
       - name: Build firmware
         if: inputs.with_firmware
