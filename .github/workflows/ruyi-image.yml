@@ -172,23 +172,6 @@ jobs:
           fdtoverlay -i device/dtb/ruyi-soc.dtb -o out/dtb/ruyi.dtb device/dtb/ruyi-board.dtbo
           ls -l out/dtb/ruyi.dtb
 
-      - name: Import the sheng boot-progress kit
-        run: |
-          curl -fsSL -o /tmp/sheng.tar.gz \
-            https://codeload.github.com/UniXNU/UniXNU-sheng/tar.gz/refs/heads/main
-          mkdir -p /tmp/sheng
-          tar -xzf /tmp/sheng.tar.gz -C /tmp/sheng --strip-components=1
-          test -f /tmp/sheng/kits/sheng/BootProgress.c
-          test -f /tmp/sheng/scripts/build-boot-progress.py
-          mkdir -p device/kits/ruyi device/scripts
-          cp -R /tmp/sheng/kits/sheng/. device/kits/ruyi/
-          cp /tmp/sheng/scripts/build-boot-progress.py device/scripts/build-boot-progress.py
-          for f in $(grep -rl 'kits/sheng' device/kits/ruyi device/scripts/build-boot-progress.py 2>/dev/null); do
-            sed -i '' 's#kits/sheng#kits/ruyi#g' "$f"
-          done
-          echo "== imported kit =="
-          ls -l device/kits/ruyi | head -30
-
       - name: Build kernel
         run: ./unixnu build kernel
 
