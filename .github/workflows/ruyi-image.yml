@@ -88,19 +88,6 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/uefi" device/uefi-sheng
           ls -l device/uefi-sheng/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/Font.h
 
-      - name: Locate DarwinBootPkg
-        if: inputs.with_firmware
-        run: |
-          echo "== package directories =="
-          find . -maxdepth 5 -type d -name 'DarwinBootPkg' 2>/dev/null || echo "not found"
-          echo "== DarwinBoot.inf =="
-          find . -name 'DarwinBoot.inf' 2>/dev/null | head -5 || true
-          echo "== FILE_GUID and Depex =="
-          for f in $(find . -name 'DarwinBoot.inf' 2>/dev/null | head -3); do
-            echo "--- $f"
-            grep -iE 'FILE_GUID|Depex|DEPS' "$f" || true
-          done
-
       - name: Report the Mu-Silicium tree
         if: inputs.with_firmware
         run: |
@@ -209,6 +196,19 @@ jobs:
       - name: Build firmware
         if: inputs.with_firmware
         run: ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi"
+
+      - name: Locate DarwinBootPkg
+        if: inputs.with_firmware
+        run: |
+          echo "== package directories =="
+          find . -maxdepth 5 -type d -name 'DarwinBootPkg' 2>/dev/null || echo "not found"
+          echo "== DarwinBoot.inf =="
+          find . -name 'DarwinBoot.inf' 2>/dev/null | head -5 || true
+          echo "== FILE_GUID and Depex =="
+          for f in $(find . -name 'DarwinBoot.inf' 2>/dev/null | head -3); do
+            echo "--- $f"
+            grep -iE 'FILE_GUID|Depex|DEPS' "$f" || true
+          done
 
       - name: Report firmware contents
         if: inputs.with_firmware
