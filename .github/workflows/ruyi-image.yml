@@ -1,4 +1,4 @@
-# ruyi image pipeline: kernel -> package -> firmware -> boot.img
+# ruyi image pipeline: kernel -> package -> payload -> firmware -> boot.img
 #
 # Add this file to your fork of UniXNU as .github/workflows/ruyi-image.yml.
 # The stock macos.yml only covers kernel/userdata/payload; the UEFI firmware volume and the
@@ -6,12 +6,13 @@
 #
 # Run it in two phases:
 #   1. with_firmware = false  -> kernel + EDK II package + device tree merge
-#   2. with_firmware = true   -> also builds SILICIUM_UEFI.fd and packs boot.img (needs uefi-ruyi)
+#   2. with_firmware = true   -> also builds the payload, SILICIUM_UEFI.fd and boot.img
 #
-# Revision 3:
-#   - the uefi checkout initialises submodules explicitly (Binaries is required by APRIORI.inc)
-#   - a report step prints the uefi tree, the Binaries submodule and the platform files before
-#     the firmware build, so a missing piece is visible without reading 200 lines of EDK II output
+# Revision 8:
+#   - links the UEFI checkout into the device tree, which the payload helpers expect
+#   - locates DarwinBootPkg and prints its FILE_GUID and Depex
+#   - reports the payload image contents instead of patching a stage directory that no longer
+#     exists after packing (that step used to fail the job)
 #   - a failure step greps the firmware log for the actual EDK II error
 
 name: ruyi image
@@ -86,6 +87,19 @@ jobs:
         run: |
           ln -sfn "$GITHUB_WORKSPACE/uefi" device/uefi-sheng
           ls -l device/uefi-sheng/Silicon/Silicium/SiliciumPkg/Library/FrameBufferSerialPortLib/Font.h
+
+      - name: Locate DarwinBootPkg
+        if: inputs.with_firmware
+        run: |
+          echo "== package directories =="
+          find . -maxdepth 5 -type d -name 'DarwinBootPkg' 2>/dev/null || echo "not found"
+          echo "== DarwinBoot.inf =="
+          find . -name 'DarwinBoot.inf' 2>/dev/null | head -5 || true
+          echo "== FILE_GUID and Depex =="
+          for f in $(find . -name 'DarwinBoot.inf' 2>/dev/null | head -3); do
+            echo "--- $f"
+            grep -iE 'FILE_GUID|Depex|DEPS' "$f" || true
+          done
 
       - name: Report the Mu-Silicium tree
         if: inputs.with_firmware
@@ -184,12 +198,13 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/uefi" out/ruyi/tree/uefi-sheng
           ./unixnu build payload
 
-      - name: Report the payload
+      - name: Report the payload image
         if: inputs.with_firmware
         run: |
-          ls -lh out/ruyi/payload/boot 2>/dev/null || true
-          ls -lh out/ruyi/payload 2>/dev/null || true
-          find out/ruyi/payload -maxdepth 3 -type f 2>/dev/null | head -20 || true
+          IMG=out/ruyi/payload/payload.img
+          ls -l "$IMG" || true
+          echo "== image contents =="
+          mdir -/ -i "$IMG" ::/ 2>&1 | head -40 || true
 
       - name: Build firmware
         if: inputs.with_firmware
