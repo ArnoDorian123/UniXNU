@@ -184,37 +184,17 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/uefi" out/ruyi/tree/uefi-sheng
           ./unixnu build payload
 
-      - name: Write and report the boot configuration
+      - name: Report the payload
         if: inputs.with_firmware
         run: |
-          STAGE=out/ruyi/payload/stage/EFI/UniXNU
-          test -d "$STAGE"
           echo "== payload tree =="
-          find out/ruyi/payload/stage -maxdepth 4 -type f | sort
-
-          cat > "$STAGE/unixnu.toml" <<'EOF'
-          version = 1
-
-          [boot]
-          timeout = 3
-          default = "xnu"
-
-          [ui]
-          title = "UniXNU"
-          scale = 6
-          console = "graphics"
-          layout = "portrait"
-
-          [[entry]]
-          id = "xnu"
-          title = "Boot XNU"
-          type = "xnu"
-          path = "Payloads/kernel.macho"
-          adt = "Payloads/kernel.macho.adt"
-          EOF
-
-          echo "== unixnu.toml =="
-          cat "$STAGE/unixnu.toml"
+          find out/ruyi/payload -maxdepth 5 2>/dev/null | sort | head -80 || true
+          echo "== toml files =="
+          find out/ruyi/payload -iname '*.toml' 2>/dev/null | sort || true
+          echo "== UniXNU directories =="
+          find out/ruyi/payload -type d -iname 'UniXNU' 2>/dev/null || true
+          echo "== payload images =="
+          ls -l out/ruyi/payload/*.img 2>/dev/null || echo "no payload image"
 
       - name: Build firmware
         if: inputs.with_firmware
