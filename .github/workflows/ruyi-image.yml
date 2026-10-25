@@ -193,6 +193,18 @@ jobs:
           echo "== image contents =="
           mdir -/ -i "$IMG" ::/ 2>&1 | head -40 || true
 
+      - name: Locate advanced logger libraries
+        if: inputs.with_firmware
+        run: |
+          echo "== AdvLoggerPkg =="
+          find uefi -maxdepth 4 -type d -name 'AdvLoggerPkg' 2>/dev/null || echo "MISSING AdvLoggerPkg"
+          echo "== QrEncoderLib =="
+          find uefi -name 'QrEncoderLib.inf' 2>/dev/null || echo "MISSING QrEncoderLib"
+          echo "== AdvancedLogDxe =="
+          find . -name 'AdvancedLogDxe.inf' 2>/dev/null || echo "MISSING AdvancedLogDxe"
+          echo "== AdvancedLoggerAccessLib =="
+          find uefi -name 'AdvancedLoggerAccessLib.inf' 2>/dev/null || echo "MISSING AdvancedLoggerAccessLib"
+
       - name: Build firmware
         if: inputs.with_firmware
         run: ./unixnu build firmware --uefi "$GITHUB_WORKSPACE/uefi"
