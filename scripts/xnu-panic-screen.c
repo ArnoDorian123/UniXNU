@@ -22,7 +22,7 @@ struct vc_info {
   u64 v_baseaddr;
 };
 
-#define SCALE   3
+#define SCALE   2
 
 extern const u64 gFont[];
 
